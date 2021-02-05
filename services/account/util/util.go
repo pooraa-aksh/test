@@ -64,26 +64,33 @@ func insertUserActivity(tx *pg.Tx, reqPayload model.AccountActivityReq) (err err
 func updateCreditTransactionStatus(tx *pg.Tx, userID int, amtToDebit float64) (err error) {
 	var (
 		txIDAmountMap map[int]float64
+		sortedTxIDs   []int
 		status        string
 		remainingAmt  float64
 	)
 
 	selectQry := `
-	SELECT JSONB_AGG(JSONB_BUILD_OBJECT(transaction_id,balance_amt) ORDER BY priority)
-	FROM user_account_activity WHERE fk_user_id = ? AND transaction_type = ? AND status = ?;`
+	SELECT JSONB_AGG(transaction_id ORDER BY priority desc), JSONB_OBJECT_AGG(transaction_id, balance_amt)
+	FROM user_account_activity 
+	WHERE fk_user_id = ? AND transaction_type = ? AND status = ?;`
 
-	if _, err = tx.Query(&txIDAmountMap, selectQry, userID, "credit", "active"); err == nil {
-		for txID, amt := range txIDAmountMap {
-			if amt <= amtToDebit {
-				amtToDebit -= amt
-				status = "debited"
-				remainingAmt = 0.0
+	if _, err = tx.Query(pg.Scan(&sortedTxIDs, &txIDAmountMap), selectQry, userID, "credit", "active"); err == nil {
+		for _, curTxID := range sortedTxIDs {
+			if amt, exists := txIDAmountMap[curTxID]; exists {
+				if amt <= amtToDebit {
+					amtToDebit -= amt
+					status = "debited"
+					remainingAmt = 0.0
+				} else {
+					remainingAmt = amt - amtToDebit
+					amtToDebit -= amtToDebit
+				}
+				err = updateAccountActivity(tx, curTxID, status, remainingAmt)
+				if err != nil || amtToDebit == 0.0 {
+					break
+				}
 			} else {
-				remainingAmt = amt - amtToDebit
-				amtToDebit -= amtToDebit
-			}
-			err = updateAccountActivity(tx, txID, status, remainingAmt)
-			if err != nil || amtToDebit == 0.0 {
+				err = errors.New("Something Went Wrong.")
 				break
 			}
 		}
@@ -99,7 +106,7 @@ func updateAccountActivity(tx *pg.Tx, txID int, status string, remainingAmt floa
 		updateQry += `, status = ?`
 		qryParam = append(qryParam, status)
 	}
-	updateQry += `WHERE transaction_id = ?;`
+	updateQry += ` WHERE transaction_id = ?;`
 	qryParam = append(qryParam, txID)
 	_, err = tx.Exec(updateQry, qryParam...)
 	return
@@ -110,10 +117,9 @@ func updateUserBalance(tx *pg.Tx, userID int, amt float64) (err error) {
 	upsertQry := `
 	INSERT INTO user_account(user_id, balance) VALUES(?, ?)
 	ON CONFLICT (user_id) 
-	DO UPDATE SET balance = balance + EXCLUDED.balance;`
+	DO UPDATE SET balance = user_account.balance + EXCLUDED.balance;`
 
 	_, err = tx.Exec(upsertQry, userID, amt)
-
 	return
 }
 
@@ -125,16 +131,25 @@ func getUserIDs(tx *pg.Tx) (userIDs []int, err error) {
 	return
 }
 
+//lockAccountActivityRows : lock account activity rows
+func lockAccountActivityRows(tx *pg.Tx, userID int) (err error) {
+	var lock []int
+
+	selectQry := `SELECT 1 FROM user_account_activity WHERE fk_user_id = ? FOR UPDATE;`
+	_, err = tx.Query(&lock, selectQry, userID)
+	return
+}
+
 //updateStatusAndRemainingAmt : update status and remaining amt
 func updateStatusAndRemainingAmt(tx *pg.Tx, userID int) (amt float64, err error) {
 	var remainingAmt []float64
 
 	updateQry := `
-	UPDATE user_account_activity SET status = ?
-	WHERE transaction_type = ? AND status = ? AND exp_date <= NOW()
+	UPDATE user_account_activity SET status = ?, balance_amt = ?
+	WHERE fk_user_id = ? AND transaction_type = ? AND status = ? AND exp_date <= NOW()
 	RETURNING balance_amt;`
 
-	if _, err = tx.Query(&remainingAmt, updateQry, "expired", "credit", "active"); err == nil {
+	if _, err = tx.Query(&remainingAmt, updateQry, "expired", 0.0, userID, "credit", "active"); err == nil {
 		for _, curAmt := range remainingAmt {
 			amt += curAmt
 		}
@@ -147,8 +162,8 @@ func updateStatusAndRemainingAmt(tx *pg.Tx, userID int) (amt float64, err error)
 func getAccountLogQry(userID int) (selectQry string, qryParam []interface{}) {
 	selectQry = `
 	SELECT fk_user_id, type, status, exp_date, amount, priority 
-	FROM user_account_activity WHERE fk_user_id = ?;`
+	FROM user_account_activity WHERE fk_user_id = ? AND transaction_type = ?;`
 
-	qryParam = append(qryParam, userID)
+	qryParam = append(qryParam, userID, "credit")
 	return
 }

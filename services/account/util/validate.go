@@ -3,6 +3,7 @@ package util
 import (
 	"errors"
 	"strconv"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/test/services/account/model"
@@ -18,8 +19,15 @@ func VAccountActivity(req *gin.Context) (reqPayload model.AccountActivityReq, er
 		} else if reqPayload.ActivityType != "credit" && reqPayload.ActivityType != "debit" {
 			err = errors.New("Invalid Activity type.")
 		}
-		if err == nil && reqPayload.ActivityType == "debit" {
-			err = checkCurrentBalance(reqPayload.Payload)
+		if err == nil {
+			if reqPayload.ActivityType == "debit" {
+				err = checkCurrentBalance(reqPayload.Payload)
+			} else {
+				expDate := time.Unix(int64(reqPayload.Payload.Expiry), 0)
+				if isAfter := time.Now().After(expDate); isAfter {
+					err = errors.New("Invalid Expiry Date.")
+				}
+			}
 		}
 	}
 
@@ -28,7 +36,7 @@ func VAccountActivity(req *gin.Context) (reqPayload model.AccountActivityReq, er
 
 //VGetAccountCreditLog: validate get account credit log
 func VGetAccountCreditLog(req *gin.Context) (userID int, err error) {
-	userIDStr := req.DefaultQuery("user_id", "")
+	userIDStr := req.DefaultQuery("user_id", "0")
 	if userID, err = strconv.Atoi(userIDStr); err == nil {
 		if userID <= 0 {
 			err = errors.New("Please Provide a Valid User ID.")

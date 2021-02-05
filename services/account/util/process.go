@@ -10,13 +10,16 @@ import (
 func PAccountActivity(reqPayload model.AccountActivityReq) (resp interface{}, err error) {
 	var tx *pg.Tx
 	if tx, err = lib.BeginTx(); err == nil {
-		if err = insertUserActivity(tx, reqPayload); err == nil {
-			amt := reqPayload.Payload.Amount
-			if reqPayload.ActivityType == "debit" {
-				err = updateCreditTransactionStatus(tx, reqPayload.Payload.UserID, amt)
-				amt = amt * -1
+		amt := reqPayload.Payload.Amount
+		if reqPayload.ActivityType == "debit" {
+			amt = amt * -1
+		}
+		if err = updateUserBalance(tx, reqPayload.Payload.UserID, amt); err == nil {
+			if err = insertUserActivity(tx, reqPayload); err == nil {
+				if reqPayload.ActivityType == "debit" {
+					err = updateCreditTransactionStatus(tx, reqPayload.Payload.UserID, reqPayload.Payload.Amount)
+				}
 			}
-			err = updateUserBalance(tx, reqPayload.Payload.UserID, amt)
 		}
 		lib.CompleteTransaction(tx, err)
 	}
@@ -33,8 +36,10 @@ func PUpdateExpiredCredit() (resp interface{}, err error) {
 	if tx, err = lib.BeginTx(); err == nil {
 		if userIDs, err = getUserIDs(tx); err == nil && len(userIDs) > 0 {
 			for _, curID := range userIDs {
-				if amt, err = updateStatusAndRemainingAmt(tx, curID); err == nil {
-					err = updateUserBalance(tx, curID, amt)
+				if err = lockAccountActivityRows(tx, curID); err == nil {
+					if amt, err = updateStatusAndRemainingAmt(tx, curID); err == nil {
+						err = updateUserBalance(tx, curID, amt)
+					}
 				}
 				if err != nil {
 					break

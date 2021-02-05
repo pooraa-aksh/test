@@ -34,6 +34,7 @@ func AccountActivity(c *gin.Context) {
 }
 
 //UpdateExpiredCredit : update expired credits
+//This api will be used via a cron that will be setup to run at a particular time interval
 func UpdateExpiredCredit(c *gin.Context) {
 	var (
 		data interface{}

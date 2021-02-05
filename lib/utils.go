@@ -33,10 +33,10 @@ func GinResponse(c *gin.Context, data interface{}, err error) {
 //Connect : connect to database
 func Connect() (db *pg.DB, err error) {
 	opts := &pg.Options{
-		User:     "postgres",
-		Password: "Bvd^412",
-		Addr:     "172.16.24.188:5432",
-		Database: "tachyon",
+		User:     "NAME",
+		Password: "PASSWORD",
+		Addr:     "ADDR",
+		Database: "NAME",
 	}
 
 	if db = pg.Connect(opts); db == nil {
